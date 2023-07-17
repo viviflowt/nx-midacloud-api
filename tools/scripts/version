@@ -1,0 +1,113 @@
+#!/usr/bin/env node
+// eslint-disable
+const { execSync } = require('child_process')
+const fs = require('fs')
+const path = require('path')
+const fg = require('fast-glob')
+const { stdout } = require('process')
+const { cyan, yellow } = require('colorette')
+const { readCachedProjectGraph } = require('@nrwl/devkit')
+
+const bumpVersion = () => {
+  execSync(`npm run fix`, { stdio: 'inherit' })
+  execSync(`git add .`, { stdio: 'ignore' })
+  execSync(`git commit --no-verify -m "chore: fix lint"`, {
+    stdio: 'ignore',
+  })
+
+  try {
+    execSync(`npm version patch --no-git-tag-version`, { stdio: 'ignore' })
+  } catch {
+    console.error('🚨 error bumping version: please commit your changes first')
+    process.exit(1)
+  }
+
+  execSync(`git add .`, { stdio: 'ignore' })
+  execSync(`git commit --no-verify -m "chore: bump version"`, {
+    stdio: 'ignore',
+  })
+
+  const { version } = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8'),
+  )
+
+  console.info(`💡 bumped version to`, cyan(version), '\n')
+
+  return version
+}
+
+const updateVersion = (
+  version = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8'),
+  ).version,
+) => {
+  const files = fg.sync(['apps/**/package.json', 'libs/**/package.json'], {
+    onlyFiles: true,
+    suppressErrors: true,
+    absolute: true,
+    ignore: ['**/node_modules/**', '**/dist/**', '**/tmp/**', '**/coverage/**'],
+  })
+
+  for (const file of files) {
+    const packageJson = JSON.parse(fs.readFileSync(file, 'utf-8'))
+
+    const { name, private } = packageJson
+
+    if (private) {
+      console.warn(yellow('skipped'), `${name} (private)`)
+      continue
+    }
+
+    console.info(`[update]`, yellow(name))
+
+    const updatedPackageJson = {
+      ...packageJson,
+      license: 'proprietary',
+      author: 'MidaCloud',
+      engines: {
+        node: '>=18',
+      },
+    }
+
+    fs.writeFileSync(file, JSON.stringify(updatedPackageJson, null, 2))
+
+    execSync(`npx prettier-package-json --write package.json`, {
+      stdio: 'ignore',
+      cwd: path.dirname(file),
+    })
+
+    execSync(
+      `npm version ${version} --allow-same-version --no-git-tag-version`,
+      {
+        cwd: path.dirname(file),
+        stdio: 'ignore',
+      },
+    )
+
+    execSync(`git add ${file}`, {
+      stdio: 'ignore',
+      cwd: path.dirname(file),
+    })
+
+    execSync(`git tag ${name}@${version}`, {
+      stdio: 'ignore',
+      cwd: path.dirname(file),
+    })
+
+    execSync(
+      `git commit --no-verify -m "chore: ${name} update version to v${version}"`,
+      {
+        stdio: 'ignore',
+        cwd: path.dirname(file),
+      },
+    )
+  }
+}
+
+const version = () => {
+  execSync(`npx nx repair`, { stdio: 'ignore' })
+  execSync(`npx nx reset`, { stdio: 'ignore' })
+  return updateVersion(bumpVersion())
+}
+
+version()

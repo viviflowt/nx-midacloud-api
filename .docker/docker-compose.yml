@@ -1,0 +1,348 @@
+name: midacloud
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15.3-alpine3.18
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    networks:
+      midacloud:
+        aliases:
+          - postgres.midacloud
+    ports:
+      - 5432:5432
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - '-U'
+        - postgres
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  postgres-gui:
+    image: dpage/pgadmin4
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: 'admin@midacloud.com'
+      PGADMIN_DEFAULT_PASSWORD: admin"
+    ports:
+      - '8001:80'
+    networks:
+      - midacloud
+    depends_on:
+      - postgres
+
+  redis:
+    image: redis:7.2-rc2-alpine
+    restart: always
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+      - DISABLE_COMMANDS=FLUSHDB,FLUSHALL
+    networks:
+      midacloud:
+        aliases:
+          - redis.midacloud
+    ports:
+      - 6379:6379
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  redis-gui:
+    image: ghcr.io/joeferner/redis-commander:latest
+    restart: always
+    environment:
+      - REDIS_HOSTS=redis.midacloud:6379
+    networks:
+      - midacloud
+    ports:
+      - '8002:8081'
+
+  mongo:
+    image: mongo:latest
+    restart: always
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    networks:
+      midacloud:
+        aliases:
+          - mongo.midacloud
+    ports:
+      - 27017:27017
+    volumes:
+      - mongo_data:/data/db
+
+  mongo-gui:
+    image: mongo-express
+    restart: always
+    environment:
+      # - ME_CONFIG_BASICAUTH_USERNAME=admin
+      # - ME_CONFIG_BASICAUTH_PASSWORD=admin
+      - ME_CONFIG_MONGODB_SERVER=mongo.midacloud
+      - ME_CONFIG_MONGODB_PORT=27017
+    ports:
+      - 8003:8081
+    networks:
+      - midacloud
+    depends_on:
+      - mongo
+
+  localstack:
+    image: localstack/localstack
+    restart: always
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - EDGE_PORT=4566
+      - LAMBDA_REMOTE_DOCKER=0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LAMBDA_REMOTE_DOCKER=true
+      - LAMBDA_EXECUTOR=docker
+      - LAMBDA_REMOVE_CONTAINERS=false
+      - DEBUG=1
+      - LS_LOG=${LS_LOG:-debug}
+      - PERSISTENCE=1
+    networks:
+      midacloud:
+        aliases:
+          - aws.midacloud
+    ports:
+      - 4566-4597:4566-4597
+      - 9200:4571
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - http://localhost:4566/_localstack/health
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - localstack_data:/tmp/localstack
+
+  mailhog:
+    image: mailhog/mailhog
+    restart: always
+    environment:
+      - MH_STORAGE=maildir
+    networks:
+      midacloud:
+        aliases:
+          - mail.midacloud
+    ports:
+      - 1025:1025
+      - 8004:8025
+    volumes:
+      - mailhog_data:/var/lib/mailhog
+
+  nats:
+    image: nats:latest
+    restart: always
+    command:
+      - '--debug'
+      - '--cluster_name'
+      - 'mida'
+      - '--cluster'
+      - 'nats://0.0.0.0:6222'
+      - '--http_port'
+      - '8222'
+      - '--port'
+      - '4222'
+    networks:
+      midacloud:
+        aliases:
+          - nats.midacloud
+    ports:
+      - 4222:4222
+      - 8222:8222
+      - 6222:6222
+
+  nats-rep:
+    image: nats:latest
+    hostname: '{{.Node.Hostname}}'
+    restart: always
+    deploy:
+      mode: replicated
+      replicas: 2
+      restart_policy:
+        condition: always
+        delay: 5s
+    command:
+      - '--debug'
+      - '--cluster_name'
+      - 'mida'
+      - '--cluster'
+      - 'nats://0.0.0.0:6222'
+      - '--http_port'
+      - '8222'
+      - '--port'
+      - '4222'
+      - '--routes'
+      - 'nats://nats.midacloud:6222'
+    networks:
+      - midacloud
+    depends_on:
+      - nats
+
+  nats-gui:
+    image: sphqxe/nats-webui:latest
+    restart: always
+    networks:
+      - midacloud
+    ports:
+      - 8005:80
+    depends_on:
+      - nats
+
+  nginx-proxy:
+    image: localhost:5000/nginx-proxy:latest
+    restart: always
+    privileged: true
+    user: root
+    networks:
+      - midacloud
+    ports:
+      - 80:80
+    depends_on:
+      - service-gateway
+
+  service-gateway:
+    image: localhost:5000/service-gateway:latest
+    hostname: '{{.Node.Hostname}}'
+    deploy:
+      mode: replicated
+      replicas: 2
+      restart_policy:
+        condition: always
+        delay: 5s
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_ACCESS_TOKEN_SECRET=secret
+      - JWT_ACCESS_TOKEN_EXPIRATION_TIME=1h
+      - JWT_REFRESH_TOKEN_SECRET=secret
+      - JWT_REFRESH_TOKEN_EXPIRATION_TIME=20d
+      - DB_HOST=postgres.midacloud
+      - DB_PORT=5432
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=postgres
+      - DB_SYNCHRONIZE=true
+      - DB_DROP_SCHEMA=false
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - AWS_ENDPOINT=http://aws.midacloud:4566
+      - REDIS_HOST=redis.midacloud
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - MAILER_QUEUE_URL=http://aws.midacloud:4566/000000000000/mail-queue
+      - MONGO_URL=mongodb://mongo.midacloud:27017
+      - NATS_URL=nats://nats.midacloud:4222
+    ports:
+      - 3000
+    networks:
+      - midacloud
+    depends_on:
+      - redis
+      - localstack
+      - mongo
+      - nats
+
+  service-mailer:
+    image: localhost:5000/service-mailer:latest
+    hostname: '{{.Node.Hostname}}'
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: always
+        delay: 5s
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - AWS_ENDPOINT=http://aws.midacloud:4566
+      - MAILER_HOST=mail.midacloud
+      - MAILER_PORT=1025
+      - MAILER_USERNAME=local
+      - MAILER_PASSWORD=local
+      - MAILER_QUEUE_URL=http://aws.midacloud:4566/000000000000/mail-queue
+      - MAILER_POOLING_INTERVAL=2s
+      - MAILER_POOLING_SIZE=10
+      - MONGO_URL=mongodb://mongo.midacloud:27017
+      - NATS_URL=nats://nats.midacloud:4222
+    networks:
+      - midacloud
+    depends_on:
+      - mailhog
+      - nats
+
+  service-account:
+    image: localhost:5000/service-account:latest
+    hostname: '{{.Node.Hostname}}'
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: always
+        delay: 5s
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_ACCESS_TOKEN_SECRET=secret
+      - JWT_ACCESS_TOKEN_EXPIRATION_TIME=1h
+      - JWT_REFRESH_TOKEN_SECRET=secret
+      - JWT_REFRESH_TOKEN_EXPIRATION_TIME=20d
+      - DB_HOST=postgres.midacloud
+      - DB_PORT=5432
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=postgres
+      - DB_SYNCHRONIZE=true
+      - DB_DROP_SCHEMA=false
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - AWS_ENDPOINT=http://aws.midacloud:4566
+      - REDIS_HOST=redis.midacloud
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - MAILER_QUEUE_URL=http://aws.midacloud:4566/000000000000/mail-queue
+      - MONGO_URL=mongodb://mongo.midacloud:27017
+      - NATS_URL=nats://nats.midacloud:4222
+    networks:
+      - midacloud
+    depends_on:
+      - postgres
+      - redis
+      - localstack
+      - nats
+
+networks:
+  midacloud:
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongo_data:
+  localstack_data:
+  mailhog_data:

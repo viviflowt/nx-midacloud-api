@@ -1,0 +1,74 @@
+#!/usr/bin/env node
+'use strict'
+const { execSync, exec } = require('child_process')
+const fg = require('fast-glob')
+const fs = require('fs')
+const os = require('os')
+const Bluebird = require('bluebird')
+const { yellow, cyanBright } = require('colorette')
+const { promisify } = require('util')
+const dotenv = require('dotenv')
+const Docker = require('dockerode')
+
+dotenv.config()
+
+execSync(`npx nx repair`, { stdio: 'ignore' })
+execSync(`npx nx reset`, { stdio: 'ignore' })
+
+const execAsync = promisify(exec)
+
+const REGISTRY_URL = process.env.REGISTRY_URL || 'midacloud:5000'
+
+console.info('Building Docker Image... \n')
+
+const run = async () => {
+  execSync(`docker image prune -a -f`, { stdio: 'inherit' })
+
+  execSync(`npx nx run-many --target=docker-build --all=true --parallel=true`, {
+    stdio: 'inherit',
+  })
+
+  const output = execSync(`docker image ls | grep midacloud:5000`, {
+    stdio: 'pipe',
+  })
+    .toString()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [repository, tag, imageId, created, size] = line.split(/\s+/)
+      return {
+        repository,
+        tag,
+        imageId,
+        created,
+        size,
+      }
+    })
+
+  await Bluebird.map(
+    output,
+    async (image) => {
+      let { repository, tag, imageId } = image
+
+      repository = repository.replace('midacloud:5000', REGISTRY_URL)
+
+      execSync(`docker tag ${imageId} ${repository}`, { stdio: 'inherit' })
+
+      await execAsync(`docker push ${repository}`, {
+        stdio: 'inherit',
+      })
+        .then((output) => console.info(output.stdout))
+        .catch((error) => console.error(error.stderr))
+    },
+    { concurrency: 8 },
+  )
+}
+
+run()
+
+// # docker pull ubuntu:16.04
+// # docker tag ubuntu:16.04 localhost:5000/my-ubuntu
+// # docker push localhost:5000/my-ubuntu
+// # docker image remove ubuntu:16.04
+// # docker image remove localhost:5000/my-ubuntu
+// # docker pull localhost:5000/my-ubuntu

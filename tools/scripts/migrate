@@ -1,0 +1,34 @@
+#!/usr/bin/env node
+'use strict'
+const { execSync } = require('child_process')
+const { blueBright, yellowBright } = require('colorette')
+const path = require('path')
+const f = require('lodash/fp')
+
+const args = process.argv.slice(2)
+
+const migrationName = f.pipe(
+  f.map(f.trim),
+  f.join(' '),
+  f.toLower,
+  f.kebabCase,
+)(args)
+
+if (!migrationName) {
+  console.error('Missing migration name')
+  process.exit(1)
+}
+
+const migrationDir = path.join('tools', 'database', 'migrations')
+
+const output = path.join(migrationDir, migrationName)
+
+console.info('migration:', yellowBright(migrationName))
+
+execSync(`npm run typeorm migration:generate -p ${output}`, {
+  stdio: 'inherit',
+})
+
+execSync(`npx prettier --write ${migrationDir}/*.ts`, {
+  stdio: 'ignore',
+})

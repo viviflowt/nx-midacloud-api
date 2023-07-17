@@ -1,0 +1,230 @@
+#!/usr/bin/env node
+'use strict'
+const { Project } = require('ts-morph')
+const path = require('path')
+const fs = require('fs')
+const { execSync } = require('child_process')
+const _ = require('lodash')
+
+const dim = (str) => `\x1b[2m${str}\x1b[0m`
+
+const [entityFilePath] = process.argv.slice(2)
+
+if (!entityFilePath) {
+  console.error('Usage: entity-dto <file-path>')
+  process.exit(1)
+}
+
+if (!fs.existsSync(entityFilePath)) {
+  console.error(`File not found: ${entityFilePath}`)
+  process.exit(1)
+}
+
+const project = new Project({
+  tsConfigFilePath: path.join(process.cwd(), 'tsconfig.json'),
+})
+
+const entitySourceFile = project.addSourceFileAtPath(entityFilePath)
+
+entitySourceFile.fixMissingImports()
+
+const dtoFilePath = path.normalize(
+  entityFilePath.replace('.entity.ts', '.dto.ts'),
+)
+
+if (!fs.existsSync(path.dirname(dtoFilePath))) {
+  fs.mkdirSync(path.dirname(dtoFilePath), { recursive: true })
+}
+
+const dtoSourceFile = project.createSourceFile(dtoFilePath, '', {
+  overwrite: true,
+})
+
+const entityClass = entitySourceFile.getClasses().filter((cls) => {
+  return cls.getDecorators().some((decorator) => {
+    return decorator.getName() === 'Entity'
+  })
+})[0]
+
+const entityDtoClass = dtoSourceFile.addClass({
+  name: entityClass.getName() + 'Dto',
+  isExported: true,
+})
+
+entityClass
+  .getProperties()
+  .filter((property) => !property.hasModifier('private'))
+  .filter((property) => !property.hasModifier('protected'))
+  .filter((property) => !property.isStatic())
+  .forEach((property) => {
+    const propertyType = property.getType().getText().split('.').pop()
+    const propertyName = property.getName()
+    const propertyIsOptional = property.hasQuestionToken()
+    const propertyIsArray = propertyType.includes('[]')
+    const propertyIsDate = propertyType.includes('Date')
+    const propertyIsBoolean = propertyType.includes('boolean')
+    const propertyIsNumber = propertyType.includes('number')
+    const propertyIsString = propertyType.includes('string')
+
+    const hasExcludeDecorator = property.getDecorators().some((decorator) => {
+      return decorator.getName() === 'Exclude'
+    })
+
+    const hasExposeDecorator = property.getDecorators().some((decorator) => {
+      return decorator.getName() === 'Expose'
+    })
+
+    const columnDecorator = property
+      .getDecorators()
+      .find((decorator) => decorator.getName() === 'Column')
+
+    const columnOptions = (
+      columnDecorator
+        ?.getText()
+        .match(/\(([^)]+)\)/)[1]
+        .replace(/^{|}$/g, '')
+        .split(',')
+        .map((option) => {
+          const [key, value] = option.split(':').map((item) => item.trim())
+          return { key, value }
+        }) || []
+    ).reduce((acc, option) => {
+      if (option.value === 'true' || option.value === 'false') {
+        acc[option.key] = option.value === 'true'
+        return acc
+      } else if (option.value === 'null') {
+        acc[option.key] = null
+        return acc
+      }
+      acc[option.key] = option?.value?.replace(/^'|'$/g, '')
+      return acc
+    }, {})
+
+    const propertyIsEnum = columnOptions.type === 'enum'
+    const isNullable = columnOptions.nullable === 'true'
+
+    const prop = entityDtoClass.addProperty({
+      name: propertyName,
+      type: propertyType,
+      hasQuestionToken: propertyIsOptional,
+      isReadonly: true,
+    })
+
+    const options = {
+      name: propertyName,
+      ...(!propertyIsOptional && { required: true }),
+      ...(propertyIsArray && { isArray: true }),
+    }
+
+    prop.addDecorator({
+      name: 'ApiProperty',
+      arguments: [
+        `{ ${Object.entries(options)
+          .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+          .join(', ')}, type: ${_.upperFirst(propertyType)} }`,
+      ],
+    })
+
+    if (propertyIsBoolean) {
+      prop.addDecorator({
+        name: 'IsBoolean',
+        arguments: [],
+      })
+    }
+
+    if (propertyIsDate) {
+      prop.addDecorator({
+        name: 'IsDate',
+        arguments: [],
+      })
+    }
+
+    if (propertyIsNumber) {
+      const isInteger = columnOptions?.type?.includes('int')
+
+      if (isInteger) {
+        prop.addDecorator({
+          name: 'IsInt',
+          arguments: [],
+        })
+      } else {
+        prop.addDecorator({
+          name: 'IsNumber',
+          arguments: [],
+        })
+      }
+    }
+
+    if (propertyIsString) {
+      prop.addDecorator({
+        name: 'IsString',
+        arguments: [],
+      })
+    }
+
+    if (propertyIsOptional) {
+      prop.addDecorator({
+        name: 'IsOptional',
+        arguments: [],
+      })
+    }
+
+    if (propertyIsEnum) {
+      prop.addDecorator({
+        name: 'IsEnum',
+        arguments: [propertyType],
+      })
+    }
+
+    if (!isNullable) {
+      prop.addDecorator({
+        name: 'IsNotEmpty',
+        arguments: [],
+      })
+    }
+
+    if (hasExcludeDecorator) {
+      prop.addDecorator({
+        name: 'Exclude',
+        arguments: [
+          property
+            .getDecorators()
+            .find((decorator) => decorator.getName() === 'Exclude')
+            .getArguments()[0]
+            .getText(),
+        ],
+      })
+    }
+
+    if (hasExposeDecorator) {
+      prop.addDecorator({
+        name: 'Exclude',
+        arguments: [
+          property
+            .getDecorators()
+            .find((decorator) => decorator.getName() === 'Expose')
+            .getArguments()[0]
+            .getText(),
+        ],
+      })
+    }
+  })
+
+dtoSourceFile.fixMissingImports()
+
+console.log(dim(dtoSourceFile.getFullText()))
+
+dtoSourceFile.saveSync()
+
+execSync(`npx prettier --write ${dtoSourceFile.getFilePath()}`, {
+  stdio: 'ignore',
+})
+
+execSync(`npx eslint --fix ${dtoSourceFile.getFilePath()}`, {
+  stdio: 'ignore',
+})
+
+console.log(
+  'output:',
+  path.relative(process.cwd(), dtoSourceFile.getFilePath()),
+)

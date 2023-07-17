@@ -1,0 +1,258 @@
+name: midacloud
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15.3-alpine3.18
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    networks:
+      midacloud:
+        aliases:
+          - postgres.midacloud
+    ports:
+      - 5432:5432
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - '-U'
+        - postgres
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.2-rc2-alpine
+    restart: always
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+      - DISABLE_COMMANDS=FLUSHDB,FLUSHALL
+    networks:
+      midacloud:
+        aliases:
+          - redis.midacloud
+    ports:
+      - 6379:6379
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  mongo:
+    image: mongo:latest
+    restart: always
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    networks:
+      midacloud:
+        aliases:
+          - mongo.midacloud
+    ports:
+      - 27017:27017
+    volumes:
+      - mongo_data:/data/db
+
+  localstack:
+    image: localstack/localstack
+    restart: always
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - EDGE_PORT=4566
+      - LAMBDA_REMOTE_DOCKER=0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LAMBDA_REMOTE_DOCKER=true
+      - LAMBDA_EXECUTOR=docker
+      - LAMBDA_REMOVE_CONTAINERS=false
+      - DEBUG=1
+      - LS_LOG=${LS_LOG:-debug}
+      - PERSISTENCE=1
+    networks:
+      midacloud:
+        aliases:
+          - aws.midacloud
+    ports:
+      - 4566-4597:4566-4597
+      - 9200:4571
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - http://localhost:4566/_localstack/health
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - localstack_data:/tmp/localstack
+
+  mailhog:
+    image: mailhog/mailhog
+    restart: always
+    environment:
+      - MH_STORAGE=maildir
+    networks:
+      midacloud:
+        aliases:
+          - mail.midacloud
+    ports:
+      - 1025:1025
+      - 8025:8025
+    volumes:
+      - mailhog_data:/var/lib/mailhog
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: always
+    networks:
+      midacloud:
+        aliases:
+          - rabbitmq.midacloud
+    ports:
+      - 5672:5672
+      - 15672:15672
+
+  nginx-proxy:
+    image: midacloud:5000/midacloud-nginx-proxy:latest
+    restart: always
+    privileged: true
+    user: root
+    networks:
+      - midacloud
+    ports:
+      - 80:80
+    depends_on:
+      - service-gateway
+
+  service-gateway:
+    image: midacloud:5000/midacloud-service-gateway:latest
+    hostname: '{{.Node.Hostname}}'
+    deploy:
+      mode: replicated
+      replicas: 2
+      restart_policy:
+        condition: always
+        delay: 5s
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_ACCESS_TOKEN_SECRET=secret
+      - JWT_ACCESS_TOKEN_EXPIRATION_TIME=1h
+      - JWT_REFRESH_TOKEN_SECRET=secret
+      - JWT_REFRESH_TOKEN_EXPIRATION_TIME=20d
+      - DB_HOST=postgres.midacloud
+      - DB_PORT=5432
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=postgres
+      - DB_SYNCHRONIZE=true
+      - DB_DROP_SCHEMA=false
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - AWS_ENDPOINT=http://aws.midacloud:4566
+      - REDIS_HOST=redis.midacloud
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - MAILER_QUEUE_URL=http://aws.midacloud:4566/000000000000/mail-queue
+      - MONGO_URL=mongodb://mongo.midacloud:27017
+      - RABBITMQ_URL=amqp://rabbitmq.midacloud:5672
+      - RABBITMQ_QUEUE=gateway_queue
+    ports:
+      - 3000
+    networks:
+      - midacloud
+
+  service-mailer:
+    image: midacloud:5000/midacloud-service-mailer:latest
+    hostname: '{{.Node.Hostname}}'
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: always
+        delay: 5s
+    environment:
+      - NODE_ENV=production
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - AWS_ENDPOINT=http://aws.midacloud:4566
+      - MAILER_HOST=mail.midacloud
+      - MAILER_PORT=1025
+      - MAILER_USERNAME=local
+      - MAILER_PASSWORD=local
+      - MAILER_QUEUE_URL=http://aws.midacloud:4566/000000000000/mail-queue
+      - MAILER_POOLING_INTERVAL=5s
+      - MAILER_POOLING_SIZE=10
+      - MONGO_URL=mongodb://mongo.midacloud:27017
+      - RABBITMQ_URL=amqp://rabbitmq.midacloud:5672
+      - RABBITMQ_QUEUE=mailer_queue
+    ports:
+      - 3000
+    networks:
+      - midacloud
+
+  service-account:
+    image: midacloud:5000/midacloud-service-account:latest
+    hostname: '{{.Node.Hostname}}'
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: always
+        delay: 5s
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_ACCESS_TOKEN_SECRET=secret
+      - JWT_ACCESS_TOKEN_EXPIRATION_TIME=1h
+      - JWT_REFRESH_TOKEN_SECRET=secret
+      - JWT_REFRESH_TOKEN_EXPIRATION_TIME=20d
+      - DB_HOST=postgres.midacloud
+      - DB_PORT=5432
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=postgres
+      - DB_SYNCHRONIZE=true
+      - DB_DROP_SCHEMA=false
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - AWS_ENDPOINT=http://aws.midacloud:4566
+      - REDIS_HOST=redis.midacloud
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - MAILER_QUEUE_URL=http://aws.midacloud:4566/000000000000/mail-queue
+      - MONGO_URL=mongodb://mongo.midacloud:27017
+      - RABBITMQ_URL=amqp://rabbitmq.midacloud:5672
+      - RABBITMQ_QUEUE=account_queue
+    ports:
+      - 3000
+    networks:
+      - midacloud
+    depends_on:
+      - service-mailer
+
+networks:
+  midacloud:
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongo_data:
+  localstack_data:
+  mailhog_data:

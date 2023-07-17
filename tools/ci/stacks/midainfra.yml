@@ -1,0 +1,139 @@
+name: midacloud
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15.3-alpine3.18
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    networks:
+      midacloud:
+        aliases:
+          - postgres.midacloud
+    ports:
+      - 5432:5432
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - '-U'
+        - postgres
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.2-rc2-alpine
+    restart: always
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+      - DISABLE_COMMANDS=FLUSHDB,FLUSHALL
+    networks:
+      midacloud:
+        aliases:
+          - redis.midacloud
+    ports:
+      - 6379:6379
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  mongo:
+    image: mongo:latest
+    restart: always
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    networks:
+      midacloud:
+        aliases:
+          - mongo.midacloud
+    ports:
+      - 27017:27017
+    volumes:
+      - mongo_data:/data/db
+
+  localstack:
+    image: localstack/localstack
+    restart: always
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=local
+      - AWS_SECRET_ACCESS_KEY=local
+      - EDGE_PORT=4566
+      - LAMBDA_REMOTE_DOCKER=0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LAMBDA_REMOTE_DOCKER=true
+      - LAMBDA_EXECUTOR=docker
+      - LAMBDA_REMOVE_CONTAINERS=false
+      - DEBUG=1
+      - LS_LOG=${LS_LOG:-debug}
+      - PERSISTENCE=1
+    networks:
+      midacloud:
+        aliases:
+          - aws.midacloud
+    ports:
+      - 4566-4597:4566-4597
+      - 9200:4571
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - http://localhost:4566/_localstack/health
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - localstack_data:/tmp/localstack
+
+  mailhog:
+    image: mailhog/mailhog
+    restart: always
+    environment:
+      - MH_STORAGE=maildir
+    networks:
+      midacloud:
+        aliases:
+          - mail.midacloud
+    ports:
+      - 1025:1025
+      - 8025:8025
+    volumes:
+      - mailhog_data:/var/lib/mailhog
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: always
+    networks:
+      midacloud:
+        aliases:
+          - rabbitmq.midacloud
+    ports:
+      - 5672:5672
+      - 15672:15672
+
+networks:
+  midacloud:
+    external: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongo_data:
+  localstack_data:
+  mailhog_data:

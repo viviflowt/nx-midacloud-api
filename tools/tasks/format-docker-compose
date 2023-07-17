@@ -1,0 +1,154 @@
+#!/usr/bin/env node
+'use strict'
+const path = require('path')
+const { execSync, spawn } = require('child_process')
+const fg = require('fast-glob')
+const os = require('os')
+const { stdout } = require('process')
+const fs = require('fs')
+const f = require('lodash/fp')
+const yaml = require('js-yaml')
+
+const [file] = process.argv.slice(2)
+
+if (!file) {
+  console.error('No file provided')
+  process.exit(1)
+}
+
+if (!fs.existsSync(file)) {
+  console.error(`File ${file} does not exist`)
+  process.exit(1)
+}
+
+const FILE_ORDER = [
+  'name',
+  'version',
+  'services',
+  'networks',
+  'volumes',
+  'configs',
+  'secrets',
+  //
+]
+
+const DEPLOY_ORDER = [
+  'mode',
+  'replicas',
+  'placement',
+  'domainname',
+  'update_config',
+  'rollback_config',
+  'restart_policy',
+  'resources',
+]
+
+const SERVICE_ORDER = [
+  'container_name',
+  'hostname',
+  'image',
+  'build',
+  'restart',
+  'deploy',
+  'privileged',
+  'user',
+  'command',
+  'entrypoint',
+  'env_file',
+  'environment',
+  'tty',
+  'networks',
+  'ports',
+  'extra_hosts',
+  'expose',
+  'healthcheck',
+  'volumes',
+  'depends_on',
+  'logging',
+  'labels',
+]
+
+// sort services based on dependency each other, if service
+// A depends on service B, then service B should be defined before service A
+// and dependents should be close of their dependencies in the file
+// services with more dependencies should be defined first
+// if possible, sort alphabetically services with same number of dependencies
+const sortServices = (services) => {
+  const dependencies = f.pipe(
+    f.toPairs,
+    f.map(([name, service]) => [
+      name,
+      f.pipe(f.get('depends_on'), f.size)(service),
+    ]),
+    f.fromPairs,
+  )(services)
+
+  const sorted = f.pipe(
+    f.toPairs,
+    f.sortBy(([, dependencies]) => dependencies),
+    f.reverse,
+    f.map(([name]) => name),
+  )(dependencies)
+
+  const sortedServices = f.pipe(
+    f.map((name) => [name, services[name]]),
+    f.fromPairs,
+  )(sorted)
+
+  return sortedServices
+}
+
+const run = async () => {
+  const text = fs.readFileSync(file, 'utf8')
+  let doc = yaml.load(text)
+
+  console.log(doc.services)
+
+  doc = f.pipe(
+    f.toPairs,
+    f.sortBy(([key]) => FILE_ORDER.indexOf(key)),
+    f.fromPairs,
+  )(doc)
+
+  for (const [name, service] of Object.entries(doc.services)) {
+    const ordered = f.pipe(
+      f.toPairs,
+      f.sortBy(([key]) => SERVICE_ORDER.indexOf(key)),
+      f.fromPairs,
+    )(service)
+
+    if (ordered.deploy) {
+      ordered.deploy = f.pipe(
+        f.toPairs,
+        f.sortBy(([key]) => DEPLOY_ORDER.indexOf(key)),
+        f.fromPairs,
+      )(ordered.deploy)
+    }
+
+    if (ordered.depends_on) {
+      ordered.depends_on = f.sortBy((name) => name)(ordered.depends_on)
+    }
+
+    doc.services[name] = ordered
+  }
+
+  doc.services = sortServices(doc.services)
+
+  fs.writeFileSync(
+    `sorted-${file}`,
+    yaml.dump(doc, {
+      indent: 2,
+      lineWidth: 120,
+      condenseFlow: false,
+      quotingType: '"',
+      noCompatMode: true,
+    }),
+    'utf8',
+  )
+
+  execSync(`prettier --write sorted-${file}`, {
+    stdio: 'inherit',
+  })
+}
+
+run()

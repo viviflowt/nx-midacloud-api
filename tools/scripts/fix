@@ -1,0 +1,204 @@
+#!/usr/bin/env node
+'use strict'
+const { Project } = require('ts-morph')
+const path = require('path')
+const { execSync } = require('child_process')
+const fg = require('fast-glob')
+const os = require('os')
+const { stdout } = require('process')
+
+const dim = (value) => {
+  return `\u001B[2m${value}\u001B[22m`
+}
+
+const gray = (value) => {
+  return `\u001B[90m${value}\u001B[39m`
+}
+
+const green = (value) => {
+  return `\u001B[32m${value}\u001B[39m`
+}
+
+const red = (value) => {
+  return `\u001B[31m${value}\u001B[39m`
+}
+
+const bold = (value) => {
+  return `\u001B[1m${value}\u001B[22m`
+}
+
+console.log(`
+███████████ █████ █████ █████
+░░███░░░░░░█░░███ ░░███ ░░███
+ ░███   █ ░  ░███  ░░███ ███
+ ░███████    ░███   ░░█████
+ ░███░░░█    ░███    ███░███
+ ░███  ░     ░███   ███ ░░███
+ █████       █████ █████ █████
+░░░░░       ░░░░░ ░░░░░ ░░░░░
+`)
+
+execSync(`mkdir -p ./dist`, { stdio: 'ignore' })
+execSync(`touch ./dist/.gitkeep`, { stdio: 'ignore' })
+execSync(`rm -rf ./generated`, { stdio: 'ignore' })
+
+const relativeFromRoot = (value) => {
+  return path.relative(process.cwd(), value)
+}
+
+const files = fg.sync(
+  ['apps/**/*.{ts,tsx,js,jsx}', 'libs/**/*.{ts,tsx,js,jsx}'],
+  {
+    onlyFiles: true,
+    caseSensitiveMatch: false,
+    absolute: true,
+    concurrency: Math.round(os.cpus().length / 2),
+    ignore: ['**/node_modules/**', '**/dist/**', '**/scripts/**', '**/jest.*'],
+    suppressErrors: true,
+  },
+)
+
+console.info(gray('▸'), 'Found', bold(files.length), 'files', '\n')
+
+const project = new Project({
+  tsConfigFilePath: path.join(process.cwd(), 'tsconfig.json'),
+  skipAddingFilesFromTsConfig: true,
+})
+
+files.forEach((file) => project.addSourceFileAtPath(file))
+
+const isMissing = (importPath) => {
+  const patterns = [
+    '.ts',
+    '.js',
+    '.tsx',
+    '.jsx',
+    'index.ts',
+    'index.js',
+    'index.tsx',
+    'index.jsx',
+  ].map((pattern) => `${importPath}${pattern}`)
+
+  const files = fg.sync([...patterns], {
+    onlyFiles: true,
+    caseSensitiveMatch: false,
+    concurrency: Math.round(os.cpus().length / 2),
+    ignore: ['**/node_modules/**', '**/dist/**', '**/scripts/**'],
+    suppressErrors: true,
+  })
+
+  return files.length === 0
+}
+
+const isLocal = (importDeclaration) => {
+  const moduleSpecifier = importDeclaration.getModuleSpecifierValue()
+  const isLocal = moduleSpecifier.startsWith('.')
+  const isRelative = moduleSpecifier.startsWith('..')
+  return isLocal || isRelative
+}
+
+project
+  .getSourceFiles()
+  .filter((sourceFile) => sourceFile.getImportDeclarations().some(isLocal))
+  .forEach((sourceFile) => {
+    console.info(gray('▸'), relativeFromRoot(sourceFile.getFilePath()))
+
+    sourceFile
+      .getImportDeclarations()
+      .filter((importDeclaration) =>
+        importDeclaration.getModuleSpecifierValue().startsWith('src'),
+      )
+
+      .forEach((importDeclaration) => {
+        const moduleSpecifier = importDeclaration.getModuleSpecifierValue()
+
+        const moduleSpecifierRelativePath = path.relative(
+          path.dirname(sourceFile.getFilePath()),
+          moduleSpecifier,
+        )
+        importDeclaration.setModuleSpecifier(moduleSpecifierRelativePath)
+      })
+
+    sourceFile
+      .getImportDeclarations()
+      .filter(isLocal)
+      .forEach((importDeclaration) => {
+        const moduleSpecifier = importDeclaration.getModuleSpecifierValue()
+
+        const importPath = path.join(
+          path.dirname(sourceFile.getFilePath()),
+          moduleSpecifier,
+        )
+
+        const relativeImportPath = path.relative(process.cwd(), importPath)
+
+        const SUCCESS = green('✓')
+        const FAILURE = red('✗')
+
+        const isMissingImport = isMissing(relativeImportPath)
+
+        if (isMissingImport) {
+          importDeclaration.remove()
+        }
+
+        console.info(
+          '  ',
+          isMissingImport ? FAILURE : SUCCESS,
+          dim(relativeImportPath),
+        )
+      })
+
+    sourceFile.fixMissingImports(
+      {
+        quotePreference: 'single',
+        trimTrailingWhitespace: true,
+        ensureNewLineAtEndOfFile: true,
+        removeUnusedImports: true,
+        convertTabsToSpaces: true,
+      },
+      {
+        importModuleSpecifierPreference: 'relative',
+        importModuleSpecifierEnding: 'auto',
+        allowTextChangesInNewFiles: true,
+        includePackageJsonAutoImports: 'auto',
+        allowRenameOfImportPath: true,
+      },
+    )
+
+    sourceFile.organizeImports(
+      {
+        quotePreference: 'single',
+        trimTrailingWhitespace: true,
+        ensureNewLineAtEndOfFile: true,
+        removeUnusedImports: true,
+      },
+      {
+        quotePreference: 'single',
+        trimTrailingWhitespace: true,
+        ensureNewLineAtEndOfFile: true,
+        importModuleSpecifierPreference: 'relative',
+        importModuleSpecifierEnding: 'auto',
+        allowTextChangesInNewFiles: true,
+        includePackageJsonAutoImports: 'auto',
+        allowRenameOfImportPath: true,
+        autoImportFileExcludePatterns: [
+          '**/node_modules/**',
+          '**/dist/**',
+          '**/build/**',
+        ],
+      },
+    )
+  })
+
+project.saveSync()
+stdout.write('\n')
+
+execSync(`npx prettier-package-json --write package.json`, { stdio: 'ignore' })
+execSync(`npx imports-sanitize -p ./apps`, { stdio: 'ignore' })
+execSync(`npx imports-sanitize -p ./libs`, { stdio: 'ignore' })
+execSync('npm run format', { stdio: 'ignore' })
+
+execSync(`npx nx repair`, { stdio: 'ignore' })
+execSync(`npx nx reset`, { stdio: 'ignore' })
+
+console.log(gray('▸'), bold('Done!'), '\n')

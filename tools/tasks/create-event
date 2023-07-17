@@ -1,0 +1,144 @@
+#!/usr/bin/env node
+'use strict'
+const path = require('path')
+const f = require('lodash/fp')
+const { Project, VariableDeclarationKind } = require('ts-morph')
+const { execSync } = require('child_process')
+const { greenBright, dim } = require('colorette')
+
+const OUTPUT_DIR = path.join(process.cwd(), 'generated')
+
+const args = process.argv.slice(2)
+
+const eventName = f.pipe(
+  f.map(f.trim),
+  f.join(' '),
+  f.toLower,
+  f.kebabCase,
+)(args)
+
+if (!eventName) {
+  console.error('Missing event name')
+  process.exit(1)
+}
+
+const filename = `${eventName}.event.ts`
+
+const project = new Project({
+  tsConfigFilePath: path.join(process.cwd(), 'tsconfig.json'),
+})
+
+const filePath = path.join(OUTPUT_DIR, filename)
+
+const sourceFile = project.createSourceFile(filePath, '', { overwrite: true })
+
+sourceFile.addImportDeclaration({
+  namedImports: ['EventEmitter2'],
+  moduleSpecifier: '@nestjs/event-emitter',
+})
+
+sourceFile.addImportDeclaration({
+  namedImports: ['Logger'],
+  moduleSpecifier: '@nestjs/common',
+})
+
+const EVENT_TOKEN_NAME = f.pipe(f.snakeCase, f.toUpper)(eventName) + '_EVENT'
+
+sourceFile.addVariableStatement({
+  declarationKind: VariableDeclarationKind.Const,
+  declarations: [
+    { name: EVENT_TOKEN_NAME, initializer: `'${EVENT_TOKEN_NAME}'` },
+  ],
+  isExported: true,
+})
+
+const EVENT_INTERFACE_NAME = `${f.upperFirst(
+  f.camelCase(eventName),
+)}EventPayload`
+
+sourceFile.addInterface({
+  name: EVENT_INTERFACE_NAME,
+  isExported: true,
+  properties: [{ name: 'value', type: 'string' }],
+})
+
+const CLASS_NAME = `${f.upperFirst(f.camelCase(eventName))}Event`
+
+sourceFile.addClass({
+  name: CLASS_NAME,
+  isExported: true,
+  methods: [
+    {
+      name: 'constructor',
+      parameters: [{ name: 'payload', type: EVENT_INTERFACE_NAME }],
+      statements: [`Object.assign(this, payload)`],
+      scope: 'private',
+    },
+    {
+      name: 'create',
+      parameters: [{ name: 'payload', type: EVENT_INTERFACE_NAME }],
+      returnType: `Promise<${CLASS_NAME}>`,
+      statements: [`return new ${CLASS_NAME}(payload)`],
+      isStatic: true,
+      isAsync: true,
+      scope: 'public',
+    },
+  ],
+  properties: [
+    {
+      name: 'TOKEN',
+      type: 'string',
+      initializer: EVENT_TOKEN_NAME,
+      scope: 'public',
+      isStatic: true,
+      isReadonly: true,
+    },
+    {
+      name: 'value',
+      type: 'string',
+      isReadonly: true,
+      scope: 'public',
+    },
+  ],
+})
+
+const EVENT_HANDLER_NAME = `on${f.upperFirst(f.camelCase(eventName))}Event`
+
+sourceFile.addClass({
+  name: `SomeService`,
+  isExported: true,
+  methods: [
+    {
+      name: 'constructor',
+      parameters: [
+        {
+          name: 'eventEmitter',
+          type: 'EventEmitter2',
+          scope: 'private',
+          isReadonly: true,
+          decorators: [{ name: 'InjectEventEmitter', arguments: [] }],
+        },
+      ],
+      statements: [
+        `// this.eventEmitter.on(${EVENT_TOKEN_NAME}, this.${EVENT_HANDLER_NAME}.bind(this))`,
+      ],
+    },
+    {
+      name: EVENT_HANDLER_NAME,
+      parameters: [{ name: 'payload', type: CLASS_NAME }],
+      isAsync: true,
+      scope: 'protected',
+      statements: [`Logger.log(${EVENT_TOKEN_NAME})`, `console.debug(payload)`],
+      decorators: [{ name: 'OnAsyncEvent', arguments: [EVENT_TOKEN_NAME] }],
+    },
+  ],
+})
+
+sourceFile.fixMissingImports()
+sourceFile.saveSync()
+
+console.log(dim(sourceFile.getFullText()), '\n')
+
+execSync(`yarn prettier --write ${filePath}`)
+
+console.log(`${path.relative(process.cwd(), filePath)}`, greenBright('✓'))

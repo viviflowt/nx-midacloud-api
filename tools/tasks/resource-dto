@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+'use strict'
+const { Project } = require('ts-morph')
+const path = require('path')
+const fs = require('fs')
+const { execSync } = require('child_process')
+const f = require('lodash/fp')
+
+const OUTPUT_DIR = path.join(process.cwd(), 'generated')
+
+if (!fs.existsSync(OUTPUT_DIR)) {
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true })
+}
+
+const resource = 'addresses'
+
+const project = new Project({
+  tsConfigFilePath: 'tsconfig.json',
+})
+
+const createResourceRequestDto = (resource) => {
+  const filename = `create-${f.pipe(f.kebabCase)(resource)}.dto.ts`
+
+  const dtoSourceFile = project.createSourceFile(
+    path.join(OUTPUT_DIR, filename),
+    '',
+    { overwrite: true },
+  )
+
+  const className = `Create${f.pipe(f.camelCase, f.upperFirst)(resource)}Dto`
+
+  const dtoClass = dtoSourceFile.addClass({
+    name: className,
+    isExported: true,
+  })
+
+  dtoSourceFile.saveSync()
+}
+
+const upadateResourceRequestDto = (resource) => {
+  const filename = `update-${f.pipe(f.kebabCase)(resource)}.dto.ts`
+
+  const dtoSourceFile = project.createSourceFile(
+    path.join(OUTPUT_DIR, filename),
+    '',
+    { overwrite: true },
+  )
+
+  const className = `Update${f.pipe(f.camelCase, f.upperFirst)(resource)}Dto`
+
+  const dtoClass = dtoSourceFile.addClass({
+    name: className,
+    isExported: true,
+    extends: `PartialType(
+      ${`Create${f.pipe(f.camelCase, f.upperFirst)(resource)}Dto`},
+    )`,
+  })
+
+  dtoSourceFile.fixMissingImports()
+  dtoSourceFile.saveSync()
+}
+
+const paginatedQueryResourceRequestDto = (resource) => {
+  const filename = `query-${f.pipe(f.kebabCase)(resource)}.dto.ts`
+
+  const dtoSourceFile = project.createSourceFile(
+    path.join(OUTPUT_DIR, filename),
+    '',
+    { overwrite: true },
+  )
+
+  const className = `Query${f.pipe(f.camelCase, f.upperFirst)(resource)}Dto`
+
+  const dtoClass = dtoSourceFile.addClass({
+    name: className,
+    isExported: true,
+    extends: `PaginatedQuery<${f.pipe(f.camelCase, f.upperFirst)(resource)}>`,
+  })
+
+  dtoSourceFile.fixMissingImports()
+  dtoSourceFile.saveSync()
+}
+
+const resourceResponseDto = (resource) => {
+  const filename = `${f.pipe(f.kebabCase)(resource)}-response.dto.ts`
+
+  const dtoSourceFile = project.createSourceFile(
+    path.join(OUTPUT_DIR, filename),
+    '',
+    { overwrite: true },
+  )
+
+  const className = `${f.pipe(f.camelCase, f.upperFirst)(resource)}Response`
+
+  const dtoClass = dtoSourceFile.addClass({
+    name: className,
+    isExported: true,
+    extends: `${f.pipe(f.camelCase, f.upperFirst)(resource)}`,
+  })
+
+  dtoSourceFile.fixMissingImports()
+  dtoSourceFile.saveSync()
+}
+
+createResourceRequestDto(resource)
+upadateResourceRequestDto(resource)
+paginatedQueryResourceRequestDto(resource)
+resourceResponseDto(resource)
+
+execSync(`npx prettier --write ${OUTPUT_DIR}/*.ts`)

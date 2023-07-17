@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+'use strict'
+const { Project } = require('ts-morph')
+const path = require('path')
+const fs = require('fs')
+const { execSync } = require('child_process')
+const _ = require('lodash')
+const fg = require('fast-glob')
+
+const dim = (str) => `\x1b[2m${str}\x1b[0m`
+
+const generateInterface = async (filePath) => {
+  const project = new Project()
+
+  const sourceFile = project.addSourceFileAtPath(filePath)
+
+  const entities = sourceFile.getClasses().filter((classDeclaration) => {
+    return classDeclaration.getDecorators().some((decorator) => {
+      return decorator.getName() === 'Entity'
+    })
+  })
+
+  for (const entity of entities) {
+    const className = entity.getName()
+
+    const properties = entity.getProperties().map((property) => {
+      return {
+        name: property.getName(),
+        type: property.getTypeNode()?.getText(),
+        hasQuestionToken: property.hasQuestionToken(),
+        hasExclamationToken: property.hasExclamationToken(),
+        isReadonly: property.isReadonly(),
+      }
+    })
+
+    const interfaceName = `I${className}`
+    const interfaceDeclaration = sourceFile.addInterface({
+      name: interfaceName,
+      properties,
+      isExported: true,
+    })
+
+    const generatedInterface = interfaceDeclaration.getText()
+
+    console.log(generatedInterface)
+
+    const filename =
+      _.kebabCase(interfaceName.replace(/^I/, '')) + '.interface.ts'
+    const filePath = path.join(process.cwd(), 'generated', filename)
+
+    if (!fs.existsSync(path.dirname(filePath))) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    }
+
+    fs.writeFileSync(filePath, generatedInterface, 'utf-8')
+    console.log(dim(`created ${filePath}\n`))
+  }
+}
+
+const fixMissingImports = async () => {
+  const project = new Project({ tsConfigFilePath: 'tsconfig.json' })
+
+  const sourceFiles = project.getSourceFiles().filter((sourceFile) => {
+    return sourceFile.getFilePath().includes('generated')
+  })
+
+  for (const sourceFile of sourceFiles) {
+    sourceFile.fixMissingImports()
+    await sourceFile.save()
+  }
+}
+
+const run = async () => {
+  const files = await fg('src/**/*.entity.ts', {
+    onlyFiles: true,
+    absolute: true,
+    ignore: ['**/node_modules/**', '**/dist/**', '**/generated/**'],
+  })
+
+  for (const file of files) {
+    const relativePath = path.relative(process.cwd(), file)
+    console.log(dim(`${relativePath}`))
+    await generateInterface(file).catch((error) => console.error(error))
+  }
+
+  await fixMissingImports()
+
+  execSync('yarn prettier --write generated/**/*.ts', {
+    stdio: 'inherit',
+  })
+}
+
+run()
