@@ -233,7 +233,7 @@ services:
       - AWS_ACCESS_KEY_ID=local
       - AWS_SECRET_ACCESS_KEY=local
       - AWS_ENDPOINT=http://aws.midacloud:4566
-      - DATABASE_URL=postgres://postgres:postgres@postgres.midacloud/notification
+      - DATABASE_URL=postgres://postgres:postgres@database.midacloud/notification
       - REDIS_URL=redis://redis.midacloud:6379
       - MONGO_URL=mongodb://mongo.midacloud:27017
       - MAIL_HOST=mail.midacloud
